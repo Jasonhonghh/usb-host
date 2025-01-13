@@ -1,0 +1,5 @@
+[qemu]
+machine = "virt"
+cpu = "cortex-a53"
+graphic = false
+args = "-drive if=none,id=stick,format=raw,file=test.img  -device nec-usb-xhci,id=xhci -device usb-storage,bus=xhci.0,drive=stick"
