@@ -21,7 +21,7 @@ pub struct Xhci {
 
 impl Xhci {
     pub fn new(mmio_base: NonNull<u8>) -> Self {
-        unsafe { Self { mmio_base } }
+        Self { mmio_base }
     }
 
     fn regs(&self) -> Registers {

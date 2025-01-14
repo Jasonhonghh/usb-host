@@ -8,6 +8,8 @@ pub enum USBError {
     NotInitialized,
     #[error("no memory")]
     NoMemory,
+    #[error("slot limit reached")]
+    SlotLimitReached,
 }
 
 pub type Result<T = ()> = core::result::Result<T, USBError>;
