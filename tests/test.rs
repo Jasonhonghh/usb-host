@@ -23,7 +23,7 @@ fn test_work() {
     spin_on::spin_on(async {
         let mut host = get_usb_host();
 
-        host.open().await.unwrap();
+        host.init().await.unwrap();
 
         debug!("usb init ok");
     });

@@ -5,10 +5,15 @@ use futures::prelude::*;
 use log::debug;
 use xhci::accessor::Mapper;
 
+mod context;
+mod ring;
+
 use super::Controller;
 use crate::{err::*, sleep};
 
 type Registers = xhci::Registers<MemMapper>;
+type RegistersExtList = xhci::extended_capabilities::List<MemMapper>;
+type SupportedProtocol = xhci::extended_capabilities::XhciSupportedProtocol<MemMapper>;
 
 pub struct Xhci {
     mmio_base: NonNull<u8>,
@@ -16,7 +21,7 @@ pub struct Xhci {
 
 impl Xhci {
     pub fn new(mmio_base: NonNull<u8>) -> Self {
-        Self { mmio_base }
+        unsafe { Self { mmio_base } }
     }
 
     fn regs(&self) -> Registers {
@@ -60,7 +65,7 @@ impl Xhci {
 }
 
 impl Controller for Xhci {
-    fn open(&mut self) -> LocalBoxFuture<'_, Result> {
+    fn init(&mut self) -> LocalBoxFuture<'_, Result> {
         async {
             self.chip_hardware_reset().await?;
 
@@ -70,7 +75,7 @@ impl Controller for Xhci {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct MemMapper;
 impl Mapper for MemMapper {
     unsafe fn map(&mut self, phys_start: usize, _bytes: usize) -> NonZeroUsize {

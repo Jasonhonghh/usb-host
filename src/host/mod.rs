@@ -28,11 +28,11 @@ impl USBHost<Xhci> {
         Self::from(Xhci::new(reg_base))
     }
 
-    pub async fn open(&mut self) -> Result {
-        self.ctrl.open().await
+    pub async fn init(&mut self) -> Result {
+        self.ctrl.init().await
     }
 }
 
 pub trait Controller {
-    fn open(&mut self) -> LocalBoxFuture<'_, Result>;
+    fn init(&mut self) -> LocalBoxFuture<'_, Result>;
 }
