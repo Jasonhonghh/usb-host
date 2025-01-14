@@ -11,6 +11,7 @@ use core::time::Duration;
 use bare_test::{
     driver::device_tree::get_device_tree, fdt::PciSpace, mem::mmu::iomap, println, time::delay,
 };
+use futures::FutureExt;
 use log::{debug, info};
 use pcie::*;
 use usb_host::*;
@@ -19,26 +20,26 @@ bare_test::test_setup!();
 
 #[test_case]
 fn test_work() {
-    let mut host = get_usb_host();
+    spin_on::spin_on(async {
+        let mut host = get_usb_host();
 
-    debug!("usb init");
-}
+        host.open().await.unwrap();
 
-fn sleep(duration: Duration) {
-    spin_on::spin_on(delay(duration));
+        debug!("usb init ok");
+    });
 }
 
 struct KernelImpl;
 
 impl Kernel for KernelImpl {
-    fn sleep(duration: Duration) {
-        sleep(duration);
+    fn sleep<'a>(duration: Duration) -> futures::future::LocalBoxFuture<'a, ()> {
+        delay(duration).boxed_local()
     }
 }
 
 set_impl!(KernelImpl);
 
-fn get_usb_host() -> USBHost {
+fn get_usb_host() -> USBHost<Xhci> {
     let fdt = get_device_tree().unwrap();
     let pcie = fdt
         .find_compatible(&["pci-host-ecam-generic"])
@@ -105,7 +106,7 @@ fn get_usb_host() -> USBHost {
 
                 let addr = iomap(bar_addr.into(), bar_size);
 
-                return USBHost {};
+                return USBHost::new(addr);
             }
         }
     }
