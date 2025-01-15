@@ -8,6 +8,7 @@ extern crate alloc;
 
 use core::time::Duration;
 
+use alloc::vec::Vec;
 use bare_test::{
     driver::device_tree::get_device_tree, fdt::PciSpace, mem::mmu::iomap, println, time::delay,
 };
@@ -110,5 +111,21 @@ fn get_usb_host() -> USBHost<Xhci> {
             }
         }
     }
-    panic!("no igb found");
+
+    for node in fdt.all_nodes() {
+        if node.compatibles().any(|c| c.contains("xhci")) {
+            println!("usb node: {}", node.name);
+            let regs = node.reg().unwrap().collect::<Vec<_>>();
+            println!("usb regs: {:?}", regs);
+
+            let addr = iomap(
+                (regs[0].address as usize).into(),
+                regs[0].size.unwrap_or(0x1000),
+            );
+
+            return USBHost::new(addr);
+        }
+    }
+
+    panic!("no xhci found");
 }

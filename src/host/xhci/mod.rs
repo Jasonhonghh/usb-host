@@ -248,6 +248,7 @@ impl Controller for Xhci {
             self.setup_dcbaap()?;
             self.set_cmd_ring()?;
             self.init_irq()?;
+            self.setup_scratchpads()?;
             self.start().await?;
 
             Ok(())
