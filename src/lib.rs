@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(iterator_try_collect)]
 
 extern crate alloc;
 

@@ -1,11 +1,14 @@
 use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
 
+use context::ScratchpadBufferArray;
 use future::LocalBoxFuture;
 use futures::prelude::*;
-use log::debug;
+use log::{debug, info};
+use ring::{Ring, TrbData};
 use xhci::accessor::Mapper;
 
 mod context;
+mod event;
 mod ring;
 
 use super::Controller;
@@ -17,11 +20,15 @@ type SupportedProtocol = xhci::extended_capabilities::XhciSupportedProtocol<MemM
 
 pub struct Xhci {
     mmio_base: NonNull<u8>,
+    data: Option<Data>,
 }
 
 impl Xhci {
     pub fn new(mmio_base: NonNull<u8>) -> Self {
-        Self { mmio_base }
+        Self {
+            mmio_base,
+            data: None,
+        }
     }
 
     fn regs(&self) -> Registers {
@@ -62,12 +69,186 @@ impl Xhci {
 
         Ok(())
     }
+
+    fn setup_max_device_slots(&mut self) -> u8 {
+        let mut regs = self.regs();
+        let max_slots = regs
+            .capability
+            .hcsparams1
+            .read_volatile()
+            .number_of_device_slots();
+
+        regs.operational.config.update_volatile(|r| {
+            r.set_max_device_slots_enabled(max_slots);
+        });
+
+        debug!("Max device slots: {}", max_slots);
+
+        max_slots
+    }
+
+    fn setup_dcbaap(&mut self) -> Result {
+        let dcbaa_addr = self.data()?.dev_list.dcbaa.bus_addr();
+        debug!("DCBAAP: {:X}", dcbaa_addr);
+        self.regs().operational.dcbaap.update_volatile(|r| {
+            r.set(dcbaa_addr);
+        });
+
+        Ok(())
+    }
+
+    fn set_cmd_ring(&mut self) -> Result {
+        let crcr = self.data()?.cmd.trbs.bus_addr();
+        let cycle = self.data()?.cmd.cycle;
+
+        debug!("CRCR: {:X}", crcr);
+        self.regs().operational.crcr.update_volatile(|r| {
+            r.set_command_ring_pointer(crcr);
+            if cycle {
+                r.set_ring_cycle_state();
+            } else {
+                r.clear_ring_cycle_state();
+            }
+        });
+
+        Ok(())
+    }
+
+    fn init_irq(&mut self) -> Result {
+        debug!("Disable interrupts");
+        let mut regs = self.regs();
+
+        regs.operational.usbcmd.update_volatile(|r| {
+            r.clear_interrupter_enable();
+        });
+
+        let erstz = self.data()?.event.len();
+        let erdp = self.data()?.event.erdp();
+        let erstba = self.data()?.event.erstba();
+
+        let mut ir0 = regs.interrupter_register_set.interrupter_mut(0);
+        {
+            debug!("ERSTZ: {:x}", erstz);
+            ir0.erstsz.update_volatile(|r| r.set(erstz as _));
+
+            debug!("ERDP: {:x}", erdp);
+
+            ir0.erdp.update_volatile(|r| {
+                r.set_event_ring_dequeue_pointer(erdp);
+            });
+
+            debug!("ERSTBA: {:X}", erstba);
+
+            ir0.erstba.update_volatile(|r| {
+                r.set(erstba);
+            });
+            ir0.imod.update_volatile(|im| {
+                im.set_interrupt_moderation_interval(0);
+                im.set_interrupt_moderation_counter(0);
+            });
+
+            debug!("Enabling primary interrupter.");
+            ir0.iman.update_volatile(|im| {
+                im.set_interrupt_enable();
+            });
+        }
+
+        // };
+
+        // self.setup_scratchpads(buf_count);
+
+        Ok(())
+    }
+
+    fn setup_scratchpads(&mut self) -> Result {
+        let scratchpad_buf_arr = {
+            let buf_count = {
+                let count = self
+                    .regs()
+                    .capability
+                    .hcsparams2
+                    .read_volatile()
+                    .max_scratchpad_buffers();
+                debug!("Scratch buf count: {}", count);
+                count
+            };
+            if buf_count == 0 {
+                return Ok(());
+            }
+            let scratchpad_buf_arr = ScratchpadBufferArray::new(buf_count as _)?;
+
+            let bus_addr = scratchpad_buf_arr.bus_addr();
+
+            self.data()?.dev_list.dcbaa.set(0, bus_addr);
+
+            debug!("Setting up {} scratchpads, at {:#0x}", buf_count, bus_addr);
+            scratchpad_buf_arr
+        };
+
+        self.data()?.scratchpad_buf_arr = Some(scratchpad_buf_arr);
+
+        Ok(())
+    }
+
+    async fn start(&mut self) -> Result {
+        let mut regs = self.regs();
+        debug!("Start run");
+
+        regs.operational.usbcmd.update_volatile(|r| {
+            r.set_run_stop();
+        });
+
+        while regs.operational.usbsts.read_volatile().hc_halted() {
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        info!("Running");
+
+        regs.doorbell.update_volatile_at(0, |r| {
+            r.set_doorbell_stream_id(0);
+            r.set_doorbell_target(0);
+        });
+
+        Ok(())
+    }
+
+    fn data(&mut self) -> Result<&mut Data> {
+        self.data.as_mut().ok_or(USBError::NotInitialized)
+    }
+}
+
+struct Data {
+    dev_list: context::DeviceContextList,
+    cmd: Ring,
+    event: event::EventRing,
+    scratchpad_buf_arr: Option<ScratchpadBufferArray>,
+}
+
+impl Data {
+    fn new(max_slots: usize) -> Result<Self> {
+        Ok(Self {
+            dev_list: context::DeviceContextList::new(max_slots)?,
+            cmd: Ring::new(
+                0x1000 / size_of::<TrbData>(),
+                true,
+                dma_api::Direction::Bidirectional,
+            )?,
+            event: event::EventRing::new()?,
+            scratchpad_buf_arr: None,
+        })
+    }
 }
 
 impl Controller for Xhci {
     fn init(&mut self) -> LocalBoxFuture<'_, Result> {
         async {
             self.chip_hardware_reset().await?;
+            let max_slots = self.setup_max_device_slots();
+            self.data = Some(Data::new(max_slots as _)?);
+            self.setup_dcbaap()?;
+            self.set_cmd_ring()?;
+            self.init_irq()?;
+            self.start().await?;
 
             Ok(())
         }

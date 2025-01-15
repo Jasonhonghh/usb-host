@@ -35,4 +35,8 @@ impl Ring {
     fn get_trb(&self) -> Option<TrbData> {
         self.trbs.get(self.i)
     }
+
+    pub fn bus_addr(&self) -> u64 {
+        self.trbs.bus_addr()
+    }
 }

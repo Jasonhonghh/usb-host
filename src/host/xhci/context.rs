@@ -31,8 +31,8 @@ impl DeviceContext {
 
 impl DeviceContextList {
     pub fn new(max_slots: usize) -> Result<Self> {
-        let dcbaa = DVec::zeros(256, 0x1000, dma_api::Direction::Bidirectional)
-            .ok_or(USBError::NoMemory)?;
+        let dcbaa =
+            DVec::zeros(256, 0x1000, dma_api::Direction::ToDevice).ok_or(USBError::NoMemory)?;
 
         Ok(Self {
             dcbaa,
@@ -44,14 +44,51 @@ impl DeviceContextList {
     pub fn new_slot(
         &mut self,
         slot: usize,
-        hub: usize,
-        port: usize,
         num_ep: usize, // cannot lesser than 0, and consider about alignment, use usize
     ) -> Result {
         if slot > self.max_slots {
             Err(USBError::SlotLimitReached)?;
         }
 
+        let mut ctx = DeviceContext::new()?;
+
+        self.dcbaa.set(slot, ctx.out.bus_addr());
+
+        let mut rings = Vec::with_capacity(num_ep);
+
+        for _ in 0..num_ep {
+            let ring = Ring::new(32, true, dma_api::Direction::Bidirectional)?;
+            rings.push(ring);
+        }
+
+        ctx.transfer_rings = rings;
+
         Ok(())
+    }
+}
+
+pub struct ScratchpadBufferArray {
+    pub entries: DVec<u64>,
+    pub pages: Vec<DVec<u8>>,
+}
+
+impl ScratchpadBufferArray {
+    pub fn new(entries: usize) -> Result<Self> {
+        let entries =
+            DVec::zeros(entries, 64, dma_api::Direction::ToDevice).ok_or(USBError::NoMemory)?;
+
+        let pages = entries
+            .into_iter()
+            .map(|_| {
+                DVec::<u8>::zeros(0x1000, 0x1000, dma_api::Direction::ToDevice)
+                    .ok_or(USBError::NoMemory)
+            })
+            .try_collect()?;
+
+        Ok(Self { entries, pages })
+    }
+
+    pub fn bus_addr(&self) -> u64 {
+        self.entries.bus_addr()
     }
 }
