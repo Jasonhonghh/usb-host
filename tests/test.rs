@@ -29,8 +29,6 @@ fn test_cmd() {
     spin_on::spin_on(async {
         let mut host = get_usb_host();
 
-        register_irq(cfg, dev_id, handler);
-
         host.init().await.unwrap();
 
         host.test_cmd().await.unwrap();
