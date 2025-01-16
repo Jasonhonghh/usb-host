@@ -52,7 +52,7 @@ struct XhciInfo {
     irq: Vec<usize>,
 }
 
-fn get_usb_host_cfg() -> XhciInfo {
+fn get_usb_host() -> USBHost<Xhci> {
     let fdt = get_device_tree().unwrap();
     let pcie = fdt
         .find_compatible(&["pci-host-ecam-generic"])
@@ -116,11 +116,6 @@ fn get_usb_host_cfg() -> XhciInfo {
                 };
 
                 println!("bar0: {:#x}", bar_addr);
-
-                return XhciInfo {
-                    addr: bar_addr,
-                    irq: vec![ep.interrupt_line],
-                };
 
                 let addr = iomap(bar_addr.into(), bar_size);
 

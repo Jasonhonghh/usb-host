@@ -221,7 +221,7 @@ impl Xhci {
             r.set_doorbell_target(0);
         });
 
-        let res = self.data()?.event.wait_result(trb_addr).await?;
+        let res = self.data()?.event.wait_result(trb_addr).await;
 
         if let trb::event::Allowed::CommandCompletion(c) = res {
         } else {
