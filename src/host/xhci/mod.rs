@@ -5,7 +5,10 @@ use future::LocalBoxFuture;
 use futures::prelude::*;
 use log::{debug, info};
 use ring::{Ring, TrbData};
-use xhci::accessor::Mapper;
+use xhci::{
+    accessor::Mapper,
+    ring::trb::{self, command, event::CommandCompletion},
+};
 
 mod context;
 mod event;
@@ -153,8 +156,6 @@ impl Xhci {
             });
         }
 
-        // };
-
         // self.setup_scratchpads(buf_count);
 
         Ok(())
@@ -212,6 +213,39 @@ impl Xhci {
         Ok(())
     }
 
+    async fn post_cmd(&mut self, trb: command::Allowed) -> Result {
+        let trb_addr = self.data()?.cmd.enque_command(trb);
+
+        self.regs().doorbell.update_volatile_at(0, |r| {
+            r.set_doorbell_stream_id(0);
+            r.set_doorbell_target(0);
+        });
+
+        let res = self.data()?.event.wait_result(trb_addr).await?;
+
+        if let trb::event::Allowed::CommandCompletion(c) = res {
+        } else {
+            panic!("Invalid event type")
+        }
+
+        Ok(())
+    }
+
+    fn handle_event(&mut self) {
+        while let Some((allowed, cycle)) = self.data().as_mut().unwrap().event.next() {
+            match allowed {
+                trb::event::Allowed::TransferEvent(transfer_event) => todo!(),
+                trb::event::Allowed::CommandCompletion(command_completion) => todo!(),
+                trb::event::Allowed::PortStatusChange(port_status_change) => todo!(),
+                trb::event::Allowed::BandwidthRequest(bandwidth_request) => todo!(),
+                trb::event::Allowed::Doorbell(doorbell) => todo!(),
+                trb::event::Allowed::HostController(host_controller) => todo!(),
+                trb::event::Allowed::DeviceNotification(device_notification) => todo!(),
+                trb::event::Allowed::MfindexWrap(mfindex_wrap) => todo!(),
+            }
+        }
+    }
+
     fn data(&mut self) -> Result<&mut Data> {
         self.data.as_mut().ok_or(USBError::NotInitialized)
     }
@@ -254,6 +288,10 @@ impl Controller for Xhci {
             Ok(())
         }
         .boxed_local()
+    }
+
+    fn test_cmd(&mut self) -> LocalBoxFuture<'_, Result> {
+        async { Ok(()) }.boxed_local()
     }
 }
 

@@ -1,6 +1,6 @@
 use core::ptr::NonNull;
 
-use futures::future::LocalBoxFuture;
+use futures::{future::LocalBoxFuture, FutureExt};
 
 pub mod xhci;
 
@@ -31,8 +31,16 @@ impl USBHost<Xhci> {
     pub async fn init(&mut self) -> Result {
         self.ctrl.init().await
     }
+
+    pub async fn test_cmd(&mut self) -> Result {
+        self.ctrl.test_cmd().await
+    }
 }
 
 pub trait Controller {
     fn init(&mut self) -> LocalBoxFuture<'_, Result>;
+
+    fn test_cmd(&mut self) -> LocalBoxFuture<'_, Result> {
+        async { Ok(()) }.boxed_local()
+    }
 }

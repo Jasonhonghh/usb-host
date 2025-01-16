@@ -14,10 +14,15 @@ tock-registers = "0.9.0"
 log = "0.4"
 dma-api = { version = "0.2", features = ["alloc"] }
 nb = "1.1"
-bitflags = "2.6"
+bitflags = "2.8"
 thiserror = { version = "2", default-features = false }
 futures = { version = "0.3", features = ["alloc"], default-features = false }
 xhci = "0.9"
+crossbeam = { version = "0.8", features = ["alloc"], default-features = false }
+crossbeam-skiplist = { version = "0.1", features = [
+    "alloc",
+], default-features = false }
+spin = { version = "0.9" }
 
 [dev-dependencies]
 bare-test = "0.2"

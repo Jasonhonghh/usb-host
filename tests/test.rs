@@ -8,9 +8,14 @@ extern crate alloc;
 
 use core::time::Duration;
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use bare_test::{
-    driver::device_tree::get_device_tree, fdt::PciSpace, mem::mmu::iomap, println, time::delay,
+    driver::device_tree::get_device_tree,
+    fdt::PciSpace,
+    irq::{register_irq, IrqConfig},
+    mem::mmu::iomap,
+    println,
+    time::delay,
 };
 use futures::FutureExt;
 use log::{debug, info};
@@ -20,13 +25,17 @@ use usb_host::*;
 bare_test::test_setup!();
 
 #[test_case]
-fn test_work() {
+fn test_cmd() {
     spin_on::spin_on(async {
         let mut host = get_usb_host();
 
+        register_irq(cfg, dev_id, handler);
+
         host.init().await.unwrap();
 
-        debug!("usb init ok");
+        host.test_cmd().await.unwrap();
+
+        debug!("usb cmd ok");
     });
 }
 
@@ -40,7 +49,12 @@ impl Kernel for KernelImpl {
 
 set_impl!(KernelImpl);
 
-fn get_usb_host() -> USBHost<Xhci> {
+struct XhciInfo {
+    addr: usize,
+    irq: Vec<usize>,
+}
+
+fn get_usb_host_cfg() -> XhciInfo {
     let fdt = get_device_tree().unwrap();
     let pcie = fdt
         .find_compatible(&["pci-host-ecam-generic"])
@@ -104,6 +118,11 @@ fn get_usb_host() -> USBHost<Xhci> {
                 };
 
                 println!("bar0: {:#x}", bar_addr);
+
+                return XhciInfo {
+                    addr: bar_addr,
+                    irq: vec![ep.interrupt_line],
+                };
 
                 let addr = iomap(bar_addr.into(), bar_size);
 

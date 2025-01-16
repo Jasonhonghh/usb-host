@@ -54,14 +54,9 @@ impl DeviceContextList {
 
         self.dcbaa.set(slot, ctx.out.bus_addr());
 
-        let mut rings = Vec::with_capacity(num_ep);
-
-        for _ in 0..num_ep {
-            let ring = Ring::new(32, true, dma_api::Direction::Bidirectional)?;
-            rings.push(ring);
-        }
-
-        ctx.transfer_rings = rings;
+        ctx.transfer_rings = (0..num_ep)
+            .map(|_| Ring::new(32, true, dma_api::Direction::Bidirectional))
+            .try_collect()?;
 
         Ok(())
     }
@@ -78,7 +73,7 @@ impl ScratchpadBufferArray {
             DVec::zeros(entries, 64, dma_api::Direction::ToDevice).ok_or(USBError::NoMemory)?;
 
         let pages = entries
-            .into_iter()
+            .iter()
             .map(|_| {
                 DVec::<u8>::zeros(0x1000, 0x1000, dma_api::Direction::ToDevice)
                     .ok_or(USBError::NoMemory)
