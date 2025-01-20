@@ -1,65 +1,103 @@
 #![no_std]
 #![no_main]
-#![feature(custom_test_frameworks)]
-#![test_runner(bare_test::test_runner)]
-#![reexport_test_harness_main = "test_main"]
+#![feature(used_with_arg)]
 
 extern crate alloc;
 
-use core::time::Duration;
-
 use alloc::{vec, vec::Vec};
 use bare_test::{
-    driver::device_tree::get_device_tree,
-    fdt::PciSpace,
-    irq::{register_irq, IrqConfig},
+    GetIrqConfig,
+    async_std::time,
+    fdt_parser::PciSpace,
+    globals::global_val,
+    irq::{IrqHandleResult, IrqInfo, IrqParam},
     mem::mmu::iomap,
     println,
-    time::delay,
 };
+use core::time::Duration;
 use futures::FutureExt;
 use log::{debug, info};
 use pcie::*;
 use usb_host::*;
 
-bare_test::test_setup!();
+#[bare_test::tests]
+mod tests {
+    use bare_test::irq::{IrqHandleResult, IrqParam};
 
-#[test_case]
-fn test_cmd() {
-    spin_on::spin_on(async {
-        let mut host = get_usb_host();
+    use super::*;
 
-        host.init().await.unwrap();
+    #[test]
+    fn test_cmd() {
+        spin_on::spin_on(async {
+            let info = get_usb_host();
 
-        host.test_cmd().await.unwrap();
+            if let Some(irq) = &info.irq {
+                for one in &irq.cfgs {
+                    IrqParam {
+                        irq_chip: irq.irq_parent,
+                        cfg: one.clone(),
+                    }
+                    .register_builder(|irq| {
+                        debug!("USB {:?}", irq);
+                        IrqHandleResult::Handled
+                    });
+                }
+            }
 
-        debug!("usb cmd ok");
-    });
+            let mut host = info.usb;
+
+            host.init().await.unwrap();
+
+            host.test_cmd().await.unwrap();
+
+            debug!("usb cmd ok");
+        });
+    }
 }
 
 struct KernelImpl;
 
 impl Kernel for KernelImpl {
     fn sleep<'a>(duration: Duration) -> futures::future::LocalBoxFuture<'a, ()> {
-        delay(duration).boxed_local()
+        time::sleep(duration).boxed_local()
     }
 }
 
 set_impl!(KernelImpl);
 
 struct XhciInfo {
-    addr: usize,
-    irq: Vec<usize>,
+    usb: USBHost<Xhci>,
+    irq: Option<IrqInfo>,
 }
 
-fn get_usb_host() -> USBHost<Xhci> {
-    let fdt = get_device_tree().unwrap();
+fn get_usb_host() -> XhciInfo {
+    let fdt = match &global_val().platform_info {
+        bare_test::globals::PlatformInfoKind::DeviceTree(fdt) => fdt,
+
+        _ => panic!("unsupported platform"),
+    };
+
+    let fdt = fdt.get();
     let pcie = fdt
         .find_compatible(&["pci-host-ecam-generic"])
         .next()
         .unwrap()
         .into_pci()
         .unwrap();
+
+    if let Some(irq) = pcie.node.irq_info() {
+        for one in &irq.cfgs {
+            debug!("pcie irq: {:?}", one.irq);
+            IrqParam {
+                irq_chip: irq.irq_parent,
+                cfg: one.clone(),
+            }
+            .register_builder(|irq| {
+                debug!("PCIE {:?}", irq);
+                IrqHandleResult::Handled
+            });
+        }
+    }
 
     let mut pcie_regs = alloc::vec![];
 
@@ -119,7 +157,10 @@ fn get_usb_host() -> USBHost<Xhci> {
 
                 let addr = iomap(bar_addr.into(), bar_size);
 
-                return USBHost::new(addr);
+                return XhciInfo {
+                    usb: USBHost::new(addr),
+                    irq: None,
+                };
             }
         }
     }
@@ -135,7 +176,12 @@ fn get_usb_host() -> USBHost<Xhci> {
                 regs[0].size.unwrap_or(0x1000),
             );
 
-            return USBHost::new(addr);
+            let irq = node.irq_info();
+
+            return XhciInfo {
+                usb: USBHost::new(addr),
+                irq,
+            };
         }
     }
 
