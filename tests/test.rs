@@ -136,6 +136,8 @@ fn get_usb_host() -> XhciInfo {
                     | CommandRegister::BUS_MASTER_ENABLE
             });
 
+            println!("irq_pin {:?}, {:?}", ep.interrupt_pin, ep.interrupt_line );
+
             if matches!(ep.device_type(), DeviceType::UsbController) {
                 let bar_addr;
                 let bar_size;
