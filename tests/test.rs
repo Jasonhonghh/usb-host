@@ -130,13 +130,14 @@ fn get_usb_host() -> XhciInfo {
         debug!("PCI {}", elem);
 
         if let Header::Endpoint(ep) = elem.header {
-            ep.update_command(elem.root, |cmd| {
+            ep.update_command(elem.root, |mut cmd| {
+                cmd.remove(CommandRegister::INTERRUPT_DISABLE);
                 cmd | CommandRegister::IO_ENABLE
                     | CommandRegister::MEMORY_ENABLE
                     | CommandRegister::BUS_MASTER_ENABLE
             });
 
-            println!("irq_pin {:?}, {:?}", ep.interrupt_pin, ep.interrupt_line );
+            println!("irq_pin {:?}, {:?}", ep.interrupt_pin, ep.interrupt_line);
 
             if matches!(ep.device_type(), DeviceType::UsbController) {
                 let bar_addr;
