@@ -12,6 +12,7 @@ use bare_test::{
     globals::global_val,
     irq::{IrqHandleResult, IrqInfo, IrqParam},
     mem::mmu::iomap,
+    platform::fdt::GetPciIrqConfig,
     println,
 };
 use core::time::Duration;
@@ -85,20 +86,6 @@ fn get_usb_host() -> XhciInfo {
         .into_pci()
         .unwrap();
 
-    if let Some(irq) = pcie.node.irq_info() {
-        for one in &irq.cfgs {
-            debug!("pcie irq: {:?}", one.irq);
-            IrqParam {
-                irq_chip: irq.irq_parent,
-                cfg: one.clone(),
-            }
-            .register_builder(|irq| {
-                debug!("PCIE {:?}", irq);
-                IrqHandleResult::Handled
-            });
-        }
-    }
-
     let mut pcie_regs = alloc::vec![];
 
     println!("pcie: {}", pcie.node.name);
@@ -160,9 +147,18 @@ fn get_usb_host() -> XhciInfo {
 
                 let addr = iomap(bar_addr.into(), bar_size);
 
+                let irq = pcie.child_irq_info(
+                    ep.address.bus(),
+                    ep.address.device(),
+                    ep.address.function(),
+                    ep.interrupt_pin,
+                );
+
+                println!("irq: {irq:?}");
+
                 return XhciInfo {
                     usb: USBHost::new(addr),
-                    irq: None,
+                    irq,
                 };
             }
         }
