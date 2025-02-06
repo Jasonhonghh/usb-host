@@ -23,7 +23,13 @@ use usb_host::*;
 
 #[bare_test::tests]
 mod tests {
-    use bare_test::irq::{IrqHandleResult, IrqParam};
+    use core::hint::spin_loop;
+
+    use bare_test::{
+        irq::{IrqHandleResult, IrqParam},
+        task::TaskConfig,
+        time::sleep,
+    };
 
     use super::*;
 
@@ -41,13 +47,16 @@ mod tests {
                     .register_builder(|irq| {
                         debug!("USB {:?}", irq);
                         IrqHandleResult::Handled
-                    });
+                    })
+                    .register();
                 }
             }
 
             let mut host = info.usb;
 
             host.init().await.unwrap();
+
+            debug!("usb cmd test");
 
             host.test_cmd().await.unwrap();
 

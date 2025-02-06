@@ -7,6 +7,7 @@ use log::{debug, info};
 use ring::{Ring, TrbData};
 use xhci::{
     accessor::Mapper,
+    registers::doorbell,
     ring::trb::{self, command, event::CommandCompletion},
 };
 
@@ -155,7 +156,9 @@ impl Xhci {
                 im.set_interrupt_enable();
             });
         }
-
+        regs.operational.usbcmd.update_volatile(|r| {
+            r.set_interrupter_enable();
+        });
         // self.setup_scratchpads(buf_count);
 
         Ok(())
@@ -205,10 +208,8 @@ impl Xhci {
 
         info!("Running");
 
-        regs.doorbell.update_volatile_at(0, |r| {
-            r.set_doorbell_stream_id(0);
-            r.set_doorbell_target(0);
-        });
+        regs.doorbell
+            .write_volatile_at(0, doorbell::Register::default());
 
         Ok(())
     }
@@ -216,10 +217,9 @@ impl Xhci {
     async fn post_cmd(&mut self, trb: command::Allowed) -> Result {
         let trb_addr = self.data()?.cmd.enque_command(trb);
 
-        self.regs().doorbell.update_volatile_at(0, |r| {
-            r.set_doorbell_stream_id(0);
-            r.set_doorbell_target(0);
-        });
+        self.regs()
+            .doorbell
+            .write_volatile_at(0, doorbell::Register::default());
 
         let res = self.data()?.event.wait_result(trb_addr).await;
 
@@ -291,7 +291,13 @@ impl Controller for Xhci {
     }
 
     fn test_cmd(&mut self) -> LocalBoxFuture<'_, Result> {
-        async { Ok(()) }.boxed_local()
+        async {
+            self.post_cmd(command::Allowed::Noop(command::Noop::new()))
+                .await?;
+
+            Ok(())
+        }
+        .boxed_local()
     }
 }
 
@@ -299,7 +305,7 @@ impl Controller for Xhci {
 pub struct MemMapper;
 impl Mapper for MemMapper {
     unsafe fn map(&mut self, phys_start: usize, _bytes: usize) -> NonZeroUsize {
-        NonZeroUsize::new_unchecked(phys_start)
+        unsafe { NonZeroUsize::new_unchecked(phys_start) }
     }
     fn unmap(&mut self, _virt_start: usize, _bytes: usize) {}
 }
