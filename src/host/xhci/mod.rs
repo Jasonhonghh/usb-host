@@ -3,7 +3,7 @@ use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
 use context::ScratchpadBufferArray;
 use future::LocalBoxFuture;
 use futures::prelude::*;
-use log::{debug, info};
+use log::{debug, info, trace, warn};
 use ring::{Ring, TrbData};
 use xhci::{
     accessor::Mapper,
@@ -129,35 +129,39 @@ impl Xhci {
         let erstz = self.data()?.event.len();
         let erdp = self.data()?.event.erdp();
         let erstba = self.data()?.event.erstba();
-
-        let mut ir0 = regs.interrupter_register_set.interrupter_mut(0);
         {
-            debug!("ERSTZ: {:x}", erstz);
-            ir0.erstsz.update_volatile(|r| r.set(erstz as _));
+            let mut ir0 = regs.interrupter_register_set.interrupter_mut(0);
 
             debug!("ERDP: {:x}", erdp);
 
             ir0.erdp.update_volatile(|r| {
+                r.clear_event_handler_busy();
                 r.set_event_ring_dequeue_pointer(erdp);
+                r.set_dequeue_erst_segment_index(0);
             });
 
+            debug!("ERSTZ: {:x}", erstz);
+            ir0.erstsz.update_volatile(|r| r.set(erstz as _));
             debug!("ERSTBA: {:X}", erstba);
-
             ir0.erstba.update_volatile(|r| {
                 r.set(erstba);
             });
+
             ir0.imod.update_volatile(|im| {
-                im.set_interrupt_moderation_interval(0);
-                im.set_interrupt_moderation_counter(0);
+                im.set_interrupt_moderation_interval(4000);
+                im.set_interrupt_moderation_counter(1);
             });
 
             debug!("Enabling primary interrupter.");
             ir0.iman.update_volatile(|im| {
                 im.set_interrupt_enable();
             });
+            ir0.iman.read_volatile();
         }
         regs.operational.usbcmd.update_volatile(|r| {
             r.set_interrupter_enable();
+            r.set_host_system_error_enable();
+            // r.set_enable_wrap_event();
         });
         // self.setup_scratchpads(buf_count);
 
@@ -231,21 +235,6 @@ impl Xhci {
         Ok(())
     }
 
-    fn handle_event(&mut self) {
-        while let Some((allowed, cycle)) = self.data().as_mut().unwrap().event.next() {
-            match allowed {
-                trb::event::Allowed::TransferEvent(transfer_event) => todo!(),
-                trb::event::Allowed::CommandCompletion(command_completion) => todo!(),
-                trb::event::Allowed::PortStatusChange(port_status_change) => todo!(),
-                trb::event::Allowed::BandwidthRequest(bandwidth_request) => todo!(),
-                trb::event::Allowed::Doorbell(doorbell) => todo!(),
-                trb::event::Allowed::HostController(host_controller) => todo!(),
-                trb::event::Allowed::DeviceNotification(device_notification) => todo!(),
-                trb::event::Allowed::MfindexWrap(mfindex_wrap) => todo!(),
-            }
-        }
-    }
-
     fn data(&mut self) -> Result<&mut Data> {
         self.data.as_mut().ok_or(USBError::NotInitialized)
     }
@@ -260,14 +249,17 @@ struct Data {
 
 impl Data {
     fn new(max_slots: usize) -> Result<Self> {
+        let cmd = Ring::new(
+            0x1000 / size_of::<TrbData>(),
+            true,
+            dma_api::Direction::Bidirectional,
+        )?;
+        let event = event::EventRing::new(&cmd)?;
+
         Ok(Self {
             dev_list: context::DeviceContextList::new(max_slots)?,
-            cmd: Ring::new(
-                0x1000 / size_of::<TrbData>(),
-                true,
-                dma_api::Direction::Bidirectional,
-            )?,
-            event: event::EventRing::new()?,
+            cmd,
+            event,
             scratchpad_buf_arr: None,
         })
     }
@@ -298,6 +290,35 @@ impl Controller for Xhci {
             Ok(())
         }
         .boxed_local()
+    }
+
+    fn handle_irq(&mut self) {
+        let sts = self.regs().operational.usbsts.read_volatile();
+        debug!("irq: {sts:?}");
+        self.regs().operational.usbsts.write_volatile(sts);
+
+        let erdp = {
+            let event = &mut self.data().unwrap().event;
+            event.clean_events();
+            event.erdp()
+        };
+        {
+            let mut regs = self.regs();
+            let mut irq = regs.interrupter_register_set.interrupter_mut(0);
+
+            irq.erdp.update_volatile(|r| {
+                r.set_event_ring_dequeue_pointer(erdp);
+                r.clear_event_handler_busy();
+            });
+
+            irq.iman.update_volatile(|r| {
+                r.clear_interrupt_pending();
+            });
+        }
+
+        self.regs().operational.usbsts.update_volatile(|r| {
+            r.clear_event_interrupt();
+        });
     }
 }
 

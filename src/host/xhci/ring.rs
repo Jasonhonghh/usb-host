@@ -1,7 +1,7 @@
 use dma_api::DVec;
 pub use dma_api::Direction;
 use log::trace;
-use xhci::ring::trb::{command, Link};
+use xhci::ring::trb::{Link, command};
 
 use crate::err::*;
 
@@ -71,8 +71,7 @@ impl Ring {
         let addr = self.trb_bus_addr(self.i);
         trace!(
             "enqueued {} @{:#X}------------------------------------------------",
-            self.i,
-            addr
+            self.i, addr
         );
         self.next_index();
         addr
@@ -90,13 +89,6 @@ impl Ring {
         // link模式下，最后一个是Link
         if self.link && self.i >= len - 1 {
             self.i = 0;
-            need_link = true;
-            trace!("flip and link!")
-        } else if self.i >= len {
-            self.i = 0;
-        }
-
-        if need_link {
             trace!("link!");
             let address = self.trb_bus_addr(0);
             let mut link = Link::new();
@@ -112,6 +104,8 @@ impl Ring {
             self.trbs.set(len - 1, trb.into());
 
             self.cycle = !self.cycle;
+        } else if self.i >= len {
+            self.i = 0;
         }
 
         self.i
@@ -131,8 +125,12 @@ impl Ring {
         is_cycle
     }
 
-    fn trb_bus_addr(&self, i: usize) -> u64 {
+    pub fn trb_bus_addr(&self, i: usize) -> u64 {
         let base = self.trbs.bus_addr();
         base + (i * size_of::<TrbData>()) as u64
+    }
+
+    pub fn current_trb_addr(&self) -> u64 {
+        self.trb_bus_addr(self.i)
     }
 }

@@ -8,6 +8,7 @@ use alloc::{vec, vec::Vec};
 use bare_test::{
     GetIrqConfig,
     async_std::time,
+    driver_interface::interrupt_controller::IrqId,
     fdt_parser::PciSpace,
     globals::global_val,
     irq::{IrqHandleResult, IrqInfo, IrqParam},
@@ -15,44 +16,59 @@ use bare_test::{
     platform::fdt::GetPciIrqConfig,
     println,
 };
-use core::time::Duration;
+use core::{cell::UnsafeCell, time::Duration};
 use futures::FutureExt;
-use log::{debug, info};
+use log::*;
 use pcie::*;
 use usb_host::*;
+
+struct Host(UnsafeCell<USBHost<Xhci>>);
+unsafe impl Send for Host {}
+unsafe impl Sync for Host {}
 
 #[bare_test::tests]
 mod tests {
     use core::hint::spin_loop;
 
+    use alloc::sync::Arc;
     use bare_test::{
         irq::{IrqHandleResult, IrqParam},
         task::TaskConfig,
         time::sleep,
     };
+    use log::warn;
 
     use super::*;
 
     #[test]
     fn test_cmd() {
-        spin_on::spin_on(async {
-            let info = get_usb_host();
+        let info = get_usb_host();
+        let mut host = info.usb;
 
-            if let Some(irq) = &info.irq {
-                for one in &irq.cfgs {
-                    IrqParam {
-                        irq_chip: irq.irq_parent,
-                        cfg: one.clone(),
-                    }
-                    .register_builder(|irq| {
-                        debug!("USB {:?}", irq);
-                        IrqHandleResult::Handled
-                    })
-                    .register();
+        let host = Arc::new(Host(UnsafeCell::new(host)));
+
+        if let Some(irq) = &info.irq {
+            for one in &irq.cfgs {
+                IrqParam {
+                    irq_chip: irq.irq_parent,
+                    cfg: one.clone(),
                 }
+                .register_builder({
+                    let host = host.clone();
+                    move |irq| {
+                        debug!("USB {:?}", irq);
+                        unsafe {
+                            (&mut *host.0.get()).handle_irq();
+                        }
+                        IrqHandleResult::Handled
+                    }
+                })
+                .register();
             }
+        }
 
-            let mut host = info.usb;
+        spin_on::spin_on(async move {
+            let host = unsafe { &mut *host.0.get() };
 
             host.init().await.unwrap();
 
@@ -125,13 +141,25 @@ fn get_usb_host() -> XhciInfo {
     for elem in root.enumerate(None, Some(bar_alloc)) {
         debug!("PCI {}", elem);
 
-        if let Header::Endpoint(ep) = elem.header {
+        if let Header::Endpoint(mut ep) = elem.header {
             ep.update_command(elem.root, |mut cmd| {
                 cmd.remove(CommandRegister::INTERRUPT_DISABLE);
                 cmd | CommandRegister::IO_ENABLE
                     | CommandRegister::MEMORY_ENABLE
                     | CommandRegister::BUS_MASTER_ENABLE
             });
+
+            for cap in &mut ep.capabilities {
+                match cap {
+                    PciCapability::Msi(msi_capability) => {
+                        msi_capability.set_enabled(false, &mut *elem.root);
+                    }
+                    PciCapability::MsiX(msix_capability) => {
+                        msix_capability.set_enabled(false, &mut *elem.root);
+                    }
+                    _ => {}
+                }
+            }
 
             println!("irq_pin {:?}, {:?}", ep.interrupt_pin, ep.interrupt_line);
 
@@ -155,6 +183,8 @@ fn get_usb_host() -> XhciInfo {
                 println!("bar0: {:#x}", bar_addr);
 
                 let addr = iomap(bar_addr.into(), bar_size);
+
+                trace!("pin {:?}", ep.interrupt_pin);
 
                 let irq = pcie.child_irq_info(
                     ep.address.bus(),

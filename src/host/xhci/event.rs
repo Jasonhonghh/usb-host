@@ -1,13 +1,14 @@
 use core::{
+    cell::UnsafeCell,
     future::Future,
-    sync::atomic::{fence, Ordering},
-    task::Poll,
+    sync::atomic::{AtomicBool, Ordering, fence},
+    task::{Poll, Waker},
 };
 
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use dma_api::DVec;
-use futures::{future::LocalBoxFuture, FutureExt};
-use log::debug;
+use futures::{FutureExt, future::LocalBoxFuture, task::AtomicWaker};
+use log::{debug, trace};
 use spin::{mutex::Mutex, rwlock::RwLock};
 use xhci::ring::trb::event::{Allowed, CompletionCode};
 
@@ -24,11 +25,14 @@ pub struct EventRingSte {
 pub struct EventRing {
     pub ring: Ring,
     pub ste: DVec<EventRingSte>,
-    results: RwLock<BTreeMap<u64, Arc<Mutex<Option<Allowed>>>>>,
+    cmd_results: UnsafeCell<BTreeMap<u64, ResultCell>>,
 }
 
+unsafe impl Send for EventRing {}
+unsafe impl Sync for EventRing {}
+
 impl EventRing {
-    pub fn new() -> Result<Self> {
+    pub fn new(cmd_ring: &Ring) -> Result<Self> {
         let ring = Ring::new(256, true, dma_api::Direction::Bidirectional)?;
 
         let mut ste =
@@ -42,19 +46,21 @@ impl EventRing {
 
         ste.set(0, ste0);
 
+        let mut results = BTreeMap::new();
+
+        for i in 0..cmd_ring.len() {
+            let addr = cmd_ring.trb_bus_addr(i);
+            results.insert(addr, ResultCell::default());
+        }
+
         Ok(Self {
             ring,
             ste,
-            results: RwLock::new(Default::default()),
+            cmd_results: UnsafeCell::new(results),
         })
     }
 
     pub fn wait_result(&mut self, trb_addr: u64) -> LocalBoxFuture<'_, Allowed> {
-        {
-            let mut guard = self.results.write();
-            guard.insert(trb_addr, Arc::new(Mutex::new(None)));
-        }
-
         EventWaiter {
             trb_addr,
             ring: self,
@@ -62,19 +68,31 @@ impl EventRing {
         .boxed_local()
     }
 
-    pub fn clean_events(&mut self) {
-        while let Some((allowed, cycle)) = self.next() {
-            match allowed {
-                Allowed::CommandCompletion(c) =>{
-                    let addr = c.command_trb_pointer();
+    pub fn clean_events(&mut self) -> usize {
+        let mut count = 0;
 
-                    
-                },
+        while let Some((allowed, _cycle)) = self.next() {
+            match allowed {
+                Allowed::CommandCompletion(c) => {
+                    let addr = c.command_trb_pointer();
+                    trace!("[EVENT] << {:?} @{:X}", allowed, addr);
+
+                    if let Some(res) = unsafe { &mut *self.cmd_results.get() }.get_mut(&addr) {
+                        res.result.replace(allowed);
+
+                        if let Some(wake) = res.waker.take() {
+                            wake.wake();
+                        }
+                    }
+                }
                 _ => {
                     debug!("unhandled event {:?}", allowed);
                 }
             }
+            count += 1;
         }
+
+        count
     }
 
     /// 完成一次循环返回 true
@@ -94,7 +112,7 @@ impl EventRing {
     }
 
     pub fn erdp(&self) -> u64 {
-        self.ring.bus_addr() & 0xFFFF_FFFF_FFFF_FFF0
+        self.ring.current_trb_addr() & 0xFFFF_FFFF_FFFF_FFF0
     }
     pub fn erstba(&self) -> u64 {
         self.ste.bus_addr()
@@ -103,6 +121,12 @@ impl EventRing {
     pub fn len(&self) -> usize {
         self.ste.len()
     }
+}
+
+#[derive(Default)]
+struct ResultCell {
+    result: Option<Allowed>,
+    waker: AtomicWaker,
 }
 
 struct EventWaiter<'a> {
@@ -115,20 +139,21 @@ impl Future for EventWaiter<'_> {
 
     fn poll(
         self: core::pin::Pin<&mut Self>,
-        _cx: &mut core::task::Context<'_>,
+        cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         let addr = self.trb_addr;
         let entry = {
-            unsafe { &mut *self.ring.results.as_mut_ptr() }
-                .get(&addr)
+            unsafe { &mut *self.ring.cmd_results.get() }
+                .get_mut(&addr)
                 .unwrap()
-                .clone()
         };
 
-        let mut g = entry.lock();
-        match g.take() {
+        match entry.result.take() {
             Some(v) => Poll::Ready(v),
-            None => Poll::Pending,
+            None => {
+                entry.waker.register(cx.waker());
+                Poll::Pending
+            }
         }
     }
 }
