@@ -55,7 +55,7 @@ impl DeviceContextList {
         self.dcbaa.set(slot, ctx.out.bus_addr());
 
         ctx.transfer_rings = (0..num_ep)
-            .map(|_| Ring::new(32, true, dma_api::Direction::Bidirectional))
+            .map(|_| Ring::new_with_len(32, true, dma_api::Direction::Bidirectional))
             .try_collect()?;
 
         Ok(())

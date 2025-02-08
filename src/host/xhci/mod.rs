@@ -135,9 +135,9 @@ impl Xhci {
             debug!("ERDP: {:x}", erdp);
 
             ir0.erdp.update_volatile(|r| {
-                r.clear_event_handler_busy();
                 r.set_event_ring_dequeue_pointer(erdp);
                 r.set_dequeue_erst_segment_index(0);
+                r.clear_event_handler_busy();
             });
 
             debug!("ERSTZ: {:x}", erstz);
@@ -148,20 +148,20 @@ impl Xhci {
             });
 
             ir0.imod.update_volatile(|im| {
-                im.set_interrupt_moderation_interval(4000);
-                im.set_interrupt_moderation_counter(1);
+                // im.set_interrupt_moderation_interval(4000);
+                // im.set_interrupt_moderation_counter(1);
             });
 
             debug!("Enabling primary interrupter.");
             ir0.iman.update_volatile(|im| {
                 im.set_interrupt_enable();
+                im.clear_interrupt_pending();
             });
-            ir0.iman.read_volatile();
         }
         regs.operational.usbcmd.update_volatile(|r| {
             r.set_interrupter_enable();
             r.set_host_system_error_enable();
-            // r.set_enable_wrap_event();
+            r.set_enable_wrap_event();
         });
         // self.setup_scratchpads(buf_count);
 
@@ -249,7 +249,7 @@ struct Data {
 
 impl Data {
     fn new(max_slots: usize) -> Result<Self> {
-        let cmd = Ring::new(
+        let cmd = Ring::new_with_len(
             0x1000 / size_of::<TrbData>(),
             true,
             dma_api::Direction::Bidirectional,
@@ -286,39 +286,47 @@ impl Controller for Xhci {
         async {
             self.post_cmd(command::Allowed::Noop(command::Noop::new()))
                 .await?;
-
             Ok(())
         }
         .boxed_local()
     }
 
     fn handle_irq(&mut self) {
-        let sts = self.regs().operational.usbsts.read_volatile();
-        debug!("irq: {sts:?}");
-        self.regs().operational.usbsts.write_volatile(sts);
+        let mut sts = self.regs().operational.usbsts.read_volatile();
+        if sts.event_interrupt() {
+            let erdp = {
+                let event = &mut self.data().unwrap().event;
+                event.clean_events();
+                event.erdp()
+            };
+            {
+                let mut regs = self.regs();
+                let mut irq = regs.interrupter_register_set.interrupter_mut(0);
 
-        let erdp = {
-            let event = &mut self.data().unwrap().event;
-            event.clean_events();
-            event.erdp()
-        };
-        {
-            let mut regs = self.regs();
-            let mut irq = regs.interrupter_register_set.interrupter_mut(0);
+                irq.erdp.update_volatile(|r| {
+                    r.set_event_ring_dequeue_pointer(erdp);
+                    r.clear_event_handler_busy();
+                });
 
-            irq.erdp.update_volatile(|r| {
-                r.set_event_ring_dequeue_pointer(erdp);
-                r.clear_event_handler_busy();
-            });
+                irq.iman.update_volatile(|r| {
+                    r.clear_interrupt_pending();
+                });
+            }
 
-            irq.iman.update_volatile(|r| {
-                r.clear_interrupt_pending();
-            });
+            sts.clear_event_interrupt();
+        }
+        if sts.port_change_detect() {
+            debug!("Port Change Detected");
+
+            sts.clear_port_change_detect();
         }
 
-        self.regs().operational.usbsts.update_volatile(|r| {
-            r.clear_event_interrupt();
-        });
+        if sts.host_system_error() {
+            debug!("Host System Error");
+            sts.clear_host_system_error();
+        }
+
+        self.regs().operational.usbsts.write_volatile(sts);
     }
 }
 

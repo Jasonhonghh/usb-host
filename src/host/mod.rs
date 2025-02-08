@@ -33,7 +33,11 @@ impl USBHost<Xhci> {
     }
 
     pub async fn test_cmd(&mut self) -> Result {
-        self.ctrl.test_cmd().await
+        for _ in 0..300 {
+            self.ctrl.test_cmd().await?;
+        }
+
+        Ok(())
     }
 
     pub unsafe fn handle_irq(&mut self) {

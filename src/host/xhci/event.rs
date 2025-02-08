@@ -33,7 +33,7 @@ unsafe impl Sync for EventRing {}
 
 impl EventRing {
     pub fn new(cmd_ring: &Ring) -> Result<Self> {
-        let ring = Ring::new(256, true, dma_api::Direction::Bidirectional)?;
+        let ring = Ring::new(true, dma_api::Direction::Bidirectional)?;
 
         let mut ste =
             DVec::zeros(1, 64, dma_api::Direction::Bidirectional).ok_or(USBError::NoMemory)?;

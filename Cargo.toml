@@ -38,3 +38,4 @@ bare-test-macros = "0.2"
 [[test]]
 name = "test"
 harness = false
+

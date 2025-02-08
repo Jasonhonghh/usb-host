@@ -3,9 +3,10 @@ pub use dma_api::Direction;
 use log::trace;
 use xhci::ring::trb::{Link, command};
 
-use crate::err::*;
+use crate::{err::*, page_size};
 
 const TRB_LEN: usize = 4;
+const TRB_SIZE: usize = size_of::<TrbData>();
 
 #[derive(Clone)]
 #[repr(transparent)]
@@ -32,7 +33,7 @@ pub struct Ring {
 }
 
 impl Ring {
-    pub fn new(len: usize, link: bool, direction: Direction) -> Result<Self> {
+    pub fn new_with_len(len: usize, link: bool, direction: Direction) -> Result<Self> {
         let trbs = DVec::zeros(len, 64, direction).ok_or(USBError::NoMemory)?;
 
         Ok(Self {
@@ -41,6 +42,11 @@ impl Ring {
             i: 0,
             cycle: link,
         })
+    }
+
+    pub fn new(link: bool, direction: Direction) -> Result<Self> {
+        let len = page_size() / TRB_SIZE;
+        Self::new_with_len(len, link, direction)
     }
 
     pub fn len(&self) -> usize {

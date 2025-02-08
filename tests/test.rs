@@ -4,15 +4,17 @@
 
 extern crate alloc;
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 use bare_test::{
     GetIrqConfig,
     async_std::time,
-    driver_interface::interrupt_controller::IrqId,
     fdt_parser::PciSpace,
     globals::global_val,
     irq::{IrqHandleResult, IrqInfo, IrqParam},
-    mem::mmu::iomap,
+    mem::{
+        Align,
+        mmu::{iomap, page_size},
+    },
     platform::fdt::GetPciIrqConfig,
     println,
 };
@@ -42,8 +44,12 @@ mod tests {
 
     #[test]
     fn test_cmd() {
+        // bare_test::time::after(Duration::from_secs(1), || {
+        //     debug!("test timer");
+        // });
+
         let info = get_usb_host();
-        let mut host = info.usb;
+        let host = info.usb;
 
         let host = Arc::new(Host(UnsafeCell::new(host)));
 
@@ -56,7 +62,7 @@ mod tests {
                 .register_builder({
                     let host = host.clone();
                     move |irq| {
-                        debug!("USB {:?}", irq);
+                        debug!("irq usb");
                         unsafe {
                             (&mut *host.0.get()).handle_irq();
                         }
@@ -87,6 +93,10 @@ impl Kernel for KernelImpl {
     fn sleep<'a>(duration: Duration) -> futures::future::LocalBoxFuture<'a, ()> {
         time::sleep(duration).boxed_local()
     }
+
+    fn page_size() -> usize {
+        page_size()
+    }
 }
 
 set_impl!(KernelImpl);
@@ -105,7 +115,7 @@ fn get_usb_host() -> XhciInfo {
 
     let fdt = fdt.get();
     let pcie = fdt
-        .find_compatible(&["pci-host-ecam-generic"])
+        .find_compatible(&["pci-host-ecam-generic", "brcm,bcm2711-pcie"])
         .next()
         .unwrap()
         .into_pci()
@@ -116,8 +126,13 @@ fn get_usb_host() -> XhciInfo {
     println!("pcie: {}", pcie.node.name);
 
     for reg in pcie.node.reg().unwrap() {
-        println!("pcie reg: {:#x}", reg.address);
-        pcie_regs.push(iomap((reg.address as usize).into(), reg.size.unwrap()));
+        println!(
+            "pcie reg: {:#x}, bus: {:#x}",
+            reg.address, reg.child_bus_address
+        );
+        let size = reg.size.unwrap_or_default().align_up(0x1000);
+
+        pcie_regs.push(iomap((reg.address as usize).into(), size));
     }
 
     let mut bar_alloc = SimpleBarAllocator::default();
@@ -138,6 +153,7 @@ fn get_usb_host() -> XhciInfo {
 
     let mut root = RootComplexGeneric::new(base_vaddr);
 
+    // for elem in root.enumerate_keep_bar(None) {
     for elem in root.enumerate(None, Some(bar_alloc)) {
         debug!("PCI {}", elem);
 
@@ -165,7 +181,7 @@ fn get_usb_host() -> XhciInfo {
 
             if matches!(ep.device_type(), DeviceType::UsbController) {
                 let bar_addr;
-                let bar_size;
+                let mut bar_size;
                 match ep.bar {
                     pcie::BarVec::Memory32(bar_vec_t) => {
                         let bar0 = bar_vec_t[0].as_ref().unwrap();
@@ -181,9 +197,11 @@ fn get_usb_host() -> XhciInfo {
                 };
 
                 println!("bar0: {:#x}", bar_addr);
+                println!("bar0 size: {:#x}", bar_size);
+                bar_size = bar_size.align_up(0x1000);
+                println!("bar0 size algin: {:#x}", bar_size);
 
                 let addr = iomap(bar_addr.into(), bar_size);
-
                 trace!("pin {:?}", ep.interrupt_pin);
 
                 let irq = pcie.child_irq_info(

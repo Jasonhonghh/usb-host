@@ -13,6 +13,7 @@ pub use host::*;
 
 pub trait Kernel {
     fn sleep<'a>(duration: Duration) -> LocalBoxFuture<'a, ()>;
+    fn page_size() -> usize;
 }
 
 pub(crate) async fn sleep(duration: Duration) {
@@ -25,6 +26,16 @@ pub(crate) async fn sleep(duration: Duration) {
     }
 }
 
+pub(crate) fn page_size() -> usize {
+    unsafe {
+        unsafe extern "Rust" {
+            fn _usb_host_page_size() -> usize;
+        }
+
+        _usb_host_page_size()
+    }
+}
+
 #[macro_export]
 macro_rules! set_impl {
     ($t: ty) => {
@@ -33,6 +44,11 @@ macro_rules! set_impl {
             duration: core::time::Duration,
         ) -> $crate::LocalBoxFuture<'a, ()> {
             <$t as $crate::Kernel>::sleep(duration)
+        }
+
+        #[unsafe(no_mangle)]
+        unsafe fn _usb_host_page_size() -> usize {
+            <$t as $crate::Kernel>::page_size()
         }
     };
 }
