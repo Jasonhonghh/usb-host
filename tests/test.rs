@@ -44,14 +44,20 @@ mod tests {
 
     #[test]
     fn test_cmd() {
-        // bare_test::time::after(Duration::from_secs(1), || {
-        //     debug!("test timer");
-        // });
-
         let info = get_usb_host();
         let host = info.usb;
 
         let host = Arc::new(Host(UnsafeCell::new(host)));
+        bare_test::time::after(Duration::from_secs(5), {
+            let host = host.clone();
+            move || {
+                debug!("test timer");
+
+                unsafe {
+                    (&mut *host.0.get()).handle_irq();
+                }
+            }
+        });
 
         if let Some(irq) = &info.irq {
             for one in &irq.cfgs {

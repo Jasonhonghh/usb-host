@@ -1,12 +1,18 @@
-use core::{num::NonZeroUsize, ptr::NonNull, time::Duration};
+use core::{hint::spin_loop, num::NonZeroUsize, ptr::NonNull, time::Duration};
 
+use alloc::vec::Vec;
 use context::ScratchpadBufferArray;
 use future::LocalBoxFuture;
 use futures::prelude::*;
 use log::{debug, info, trace, warn};
 use ring::{Ring, TrbData};
 use xhci::{
+    ExtendedCapability,
     accessor::Mapper,
+    extended_capabilities::{
+        self,
+        usb_legacy_support_capability::{UsbLegacySupport, UsbLegacySupportControlStatus},
+    },
     registers::doorbell,
     ring::trb::{self, command, event::CommandCompletion},
 };
@@ -129,6 +135,7 @@ impl Xhci {
         let erstz = self.data()?.event.len();
         let erdp = self.data()?.event.erdp();
         let erstba = self.data()?.event.erstba();
+
         {
             let mut ir0 = regs.interrupter_register_set.interrupter_mut(0);
 
@@ -148,22 +155,27 @@ impl Xhci {
             });
 
             ir0.imod.update_volatile(|im| {
-                // im.set_interrupt_moderation_interval(4000);
-                // im.set_interrupt_moderation_counter(1);
-            });
-
-            debug!("Enabling primary interrupter.");
-            ir0.iman.update_volatile(|im| {
-                im.set_interrupt_enable();
-                im.clear_interrupt_pending();
+                im.set_interrupt_moderation_interval(40000 / 250);
+                // im.set_interrupt_moderation_counter(0);
             });
         }
+        /* Set the HCD state before we enable the irqs */
         regs.operational.usbcmd.update_volatile(|r| {
             r.set_interrupter_enable();
             r.set_host_system_error_enable();
             r.set_enable_wrap_event();
         });
-        // self.setup_scratchpads(buf_count);
+
+        {
+            debug!("Enabling primary interrupter.");
+            regs.interrupter_register_set
+                .interrupter_mut(0)
+                .iman
+                .update_volatile(|im| {
+                    im.set_interrupt_enable();
+                    im.clear_interrupt_pending();
+                });
+        }
 
         Ok(())
     }
@@ -235,6 +247,79 @@ impl Xhci {
         Ok(())
     }
 
+    fn extended_capabilities(&self) -> Vec<ExtendedCapability<MemMapper>> {
+        let hccparams1 = self.regs().capability.hccparams1.read_volatile();
+        let mapper = MemMapper {};
+        let mut out = Vec::new();
+        let mut l = match unsafe {
+            extended_capabilities::List::new(self.mmio_base.as_ptr() as usize, hccparams1, mapper)
+        } {
+            Some(v) => v,
+            None => return out,
+        };
+
+        for one in &mut l {
+            if let Ok(cap) = one {
+                out.push(cap);
+            } else {
+                break;
+            }
+        }
+        out
+    }
+
+    async fn init_ext_caps(&mut self) -> Result {
+        let caps = self.extended_capabilities();
+        debug!("Extended capabilities: {:?}", caps.len());
+
+        for cap in self.extended_capabilities() {
+            match cap {
+                ExtendedCapability::UsbLegacySupport(usb_legacy_support) => {
+                    self.legacy_init(usb_legacy_support).await?;
+                }
+                ExtendedCapability::XhciSupportedProtocol(xhci_supported_protocol) => {}
+                ExtendedCapability::HciExtendedPowerManagementCapability(generic) => {}
+                ExtendedCapability::XhciMessageInterrupt(xhci_message_interrupt) => {}
+                ExtendedCapability::XhciLocalMemory(xhci_local_memory) => {}
+                ExtendedCapability::Debug(debug) => {}
+                ExtendedCapability::XhciExtendedMessageInterrupt(generic) => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn legacy_init(&mut self, mut usb_legacy_support: UsbLegacySupport<MemMapper>) -> Result {
+        debug!("legacy init");
+        usb_legacy_support.usblegsup.update_volatile(|r| {
+            r.set_hc_os_owned_semaphore();
+        });
+
+        loop {
+            sleep(Duration::from_millis(100)).await;
+            let up = usb_legacy_support.usblegsup.read_volatile();
+            if up.hc_os_owned_semaphore() && !up.hc_bios_owned_semaphore() {
+                break;
+            }
+        }
+
+        debug!("claimed ownership from BIOS");
+
+        usb_legacy_support.usblegctlsts.update_volatile(|r| {
+            r.clear_usb_smi_enable();
+            r.clear_smi_on_host_system_error_enable();
+            r.clear_smi_on_os_ownership_enable();
+            r.clear_smi_on_pci_command_enable();
+            r.clear_smi_on_bar_enable();
+
+            r.clear_smi_on_bar();
+            r.clear_smi_on_pci_command();
+            r.clear_smi_on_os_ownership_change();
+        });
+
+        Ok(())
+    }
+
     fn data(&mut self) -> Result<&mut Data> {
         self.data.as_mut().ok_or(USBError::NotInitialized)
     }
@@ -268,6 +353,7 @@ impl Data {
 impl Controller for Xhci {
     fn init(&mut self) -> LocalBoxFuture<'_, Result> {
         async {
+            self.init_ext_caps().await?;
             self.chip_hardware_reset().await?;
             let max_slots = self.setup_max_device_slots();
             self.data = Some(Data::new(max_slots as _)?);
@@ -330,7 +416,7 @@ impl Controller for Xhci {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct MemMapper;
 impl Mapper for MemMapper {
     unsafe fn map(&mut self, phys_start: usize, _bytes: usize) -> NonZeroUsize {
