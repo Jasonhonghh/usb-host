@@ -35,6 +35,7 @@ mod tests {
     use alloc::sync::Arc;
     use bare_test::{
         irq::{IrqHandleResult, IrqParam},
+        platform::cpu_id,
         task::TaskConfig,
         time::sleep,
     };
@@ -68,7 +69,6 @@ mod tests {
                 .register_builder({
                     let host = host.clone();
                     move |irq| {
-                        debug!("irq usb");
                         unsafe {
                             (&mut *host.0.get()).handle_irq();
                         }

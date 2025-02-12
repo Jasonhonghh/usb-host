@@ -155,16 +155,10 @@ impl Xhci {
             });
 
             ir0.imod.update_volatile(|im| {
-                im.set_interrupt_moderation_interval(40000 / 250);
-                // im.set_interrupt_moderation_counter(0);
+                im.set_interrupt_moderation_interval(0x1F);
+                im.set_interrupt_moderation_counter(0);
             });
         }
-        /* Set the HCD state before we enable the irqs */
-        regs.operational.usbcmd.update_volatile(|r| {
-            r.set_interrupter_enable();
-            r.set_host_system_error_enable();
-            r.set_enable_wrap_event();
-        });
 
         {
             debug!("Enabling primary interrupter.");
@@ -177,6 +171,12 @@ impl Xhci {
                 });
         }
 
+        /* Set the HCD state before we enable the irqs */
+        regs.operational.usbcmd.update_volatile(|r| {
+            r.set_interrupter_enable();
+            r.set_host_system_error_enable();
+            r.set_enable_wrap_event();
+        });
         Ok(())
     }
 
