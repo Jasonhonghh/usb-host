@@ -10,4 +10,6 @@
 
 对于同步系统，如`ArceOS`，在调用`async`接口时可使用`spin_on`原地轮询`poll`，等效于现有同步驱动。若支持进程`yeild`，可在`poll`遇到`Pending`时记录进程ID，并`yeild`，在中断回调中恢复相应进程。
 
+设计图如下：
+
 ![流程图](异步请求.drawio.png)
