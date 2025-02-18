@@ -25,7 +25,7 @@ crossbeam-skiplist = { version = "0.1", features = [
 spin = { version = "0.9" }
 
 [dev-dependencies]
-bare-test = "0.3"
+bare-test = "0.4"
 bare-test-macros = "0.2"
 pcie = "0.2"
 byte-unit = { version = "5.1.6", default-features = false, features = ["byte"] }

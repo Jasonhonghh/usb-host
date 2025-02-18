@@ -63,7 +63,7 @@ mod tests {
         if let Some(irq) = &info.irq {
             for one in &irq.cfgs {
                 IrqParam {
-                    irq_chip: irq.irq_parent,
+                    intc: irq.irq_parent,
                     cfg: one.clone(),
                 }
                 .register_builder({
